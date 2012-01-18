@@ -32,17 +32,17 @@
 #include <XnTypes.h>
 #include "ofPoint.h"
 
-#define SHOW_RC(rc, what)                                                   \
+#define SHOW_RC(rc, what) \
 ofLogVerbose(LOG_NAME) << what << "status:" << xnGetStatusString(rc);
-#define BOOL_RC(rc, what)                                                   \
-ofLogVerbose(LOG_NAME) << what << "status:" << xnGetStatusString(rc);       \
+#define BOOL_RC(rc, what) \
+ofLogVerbose(LOG_NAME) << what << "status:" << xnGetStatusString(rc); \
 return (rc == XN_STATUS_OK);
-#define CHECK_ERR_RC(rc, what)                                              \
+#define CHECK_ERR_RC(rc, what) \
 if (rc != XN_STATUS_OK) ofLogError(LOG_NAME) << what << "status:" << xnGetStatusString(rc);
-#define BOOL_ERR_RC(rc, what)                                               \
-if (rc != XN_STATUS_OK) {                                                   \
-ofLogError(LOG_NAME) << what << "status:" << xnGetStatusString(rc);         \
-return false;                                                               \
+#define BOOL_ERR_RC(rc, what) \
+if (rc != XN_STATUS_OK) { \
+ofLogError(LOG_NAME) << what << "status:" << xnGetStatusString(rc); \
+return false; \
 }
 
 static bool rainbowPalletInit = false;
@@ -50,6 +50,26 @@ static bool rainbowPalletInit = false;
 static XnUInt8 PalletIntsR [256] = {0};
 static XnUInt8 PalletIntsG [256] = {0};
 static XnUInt8 PalletIntsB [256] = {0};
+
+enum DepthColoring {
+    COLORING_PSYCHEDELIC_SHADES = 0,
+    COLORING_PSYCHEDELIC,
+    COLORING_RAINBOW,
+    COLORING_CYCLIC_RAINBOW,
+    COLORING_BLUES,
+    COLORING_GREY,
+    COLORING_STATUS,
+    COLORING_COUNT
+};
+
+enum userStatusType {
+    USER_TRACKING_STOPPED = 0,
+    USER_TRACKING_STARTED,
+    USER_CALIBRATION_STOPPED,
+    USER_CALIBRATION_STARTED,
+    USER_SKELETON_LOST,
+    USER_SKELETON_FOUND
+};
 
 //--------------------------------------------------------------
 static void CreateRainbowPallet(){
@@ -114,6 +134,32 @@ inline XnPoint3D toXn(const ofPoint & p){
 
 inline string boolToString(bool b){
     return (string)(b ? "TRUE" : "FALSE");
+}
+
+inline string getUserStatusAsString(userStatusType type) {
+	switch (type) {
+        case USER_TRACKING_STOPPED:
+			return "USER_TRACKING_STOPPED";
+			break;
+		case USER_TRACKING_STARTED:
+			return "USER_TRACKING_STARTED";
+			break;
+		case USER_CALIBRATION_STOPPED:
+			return "USER_CALIBRATION_STOPPED";
+			break;
+		case USER_CALIBRATION_STARTED:
+			return "USER_CALIBRATION_STARTED";
+			break;
+		case USER_SKELETON_LOST:
+			return "USER_SKELETON_LOST";
+			break;
+		case USER_SKELETON_FOUND:
+			return "USER_SKELETON_FOUND";
+			break;
+		default:
+			return "UNKNOWN_USER_STATUS_TYPE";
+			break;
+    }
 }
 
 inline string getCalibrationStatusAsString(XnCalibrationStatus type) {
@@ -212,7 +258,7 @@ inline string getNodeTypeAsString(XnProductionNodeType type) {
 			break;
 		case XN_NODE_TYPE_FIRST_EXTENSION:
 			return "XN_NODE_TYPE_FIRST_EXTENSION";
-			break;	
+			break;
 		default:
 			return "UNKNOWN_NODE_TYPE";
 			break;
