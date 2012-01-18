@@ -7,6 +7,7 @@ void testApp::setup() {
     openNIDevice.setLogLevel(OF_LOG_NOTICE);
     openNIDevice.addDepthGenerator();
     openNIDevice.addImageGenerator();   // comment this out
+	openNIDevice.start();
     //openNIDevice.addInfraGenerator(); // and uncomment this to see infrared generator
     
 }
@@ -21,7 +22,7 @@ void testApp::draw(){
     
 	ofSetColor(255, 255, 255);
     
-    openNIDevices.drawDebug(); // draws all generators
+    openNIDevice.drawDebug(); // draws all generators
     //openNIDevice.drawDepth(0, 0);
     //openNIDevice.drawImage(640, 0);
     

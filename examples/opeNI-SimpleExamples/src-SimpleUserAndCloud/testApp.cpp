@@ -9,7 +9,7 @@ void testApp::setup() {
     openNIDevice.addDepthGenerator();
     openNIDevice.addImageGenerator();
     openNIDevice.addUserGenerator();
-    
+    openNIDevice.start();
     openNIDevice.setUsePointClouds(true);
 }
 
@@ -23,20 +23,21 @@ void testApp::draw(){
     
 	ofSetColor(255, 255, 255);
     
-    openNIDevice.drawDebug(); // draws all generators
-//    openNIDevice.drawDepth(0, 0);
-//    openNIDevice.drawImage(640, 0);
-//    openNIDevice.drawUsers(0, 0);
-    
+	//openNIDevice.drawDebug(); // draws all generators
+    /*
+	openNIDevice.drawDepth(0, 0);
+    openNIDevice.drawImage(640, 0);
+    openNIDevice.drawUsers(0, 0);
+//*/    
     // draw point clouds
-    int numUsers = openNIDevice.getNumUsers();
+    int numUsers = openNIDevice.getNumAnyUsers();
     for (int nID = 0; nID < numUsers; nID++){
-        ofxOpenNIUser & user = openNIDevice.getUser(nID);
+        ofxOpenNIUser & user = openNIDevice.getAnyUser(nID);
         glPointSize(2);
         ofPushMatrix();
         ofTranslate(0, 0, -1000); // center the points a bit
         glEnable(GL_DEPTH_TEST);
-        user.pointCloud.drawVertices();
+        user.getPointCloud().drawVertices();
         glDisable(GL_DEPTH_TEST);
         ofPopMatrix();
         
