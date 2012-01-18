@@ -29,9 +29,8 @@
 #include "ofxOpenNI.h"
 
 static int instanceCount = -1;
-static string CALLBACK_LOG_NAME = "ofxOpenNIUserCB";
-//static ofMutex ofxOpenNIMutex;
-static bool shutdown = false;
+static ofxOpenNIUser staticDummyUser;
+
 //--------------------------------------------------------------
 ofxOpenNI::ofxOpenNI(){
 	instanceCount++;
@@ -52,6 +51,7 @@ ofxOpenNI::ofxOpenNI(){
 	depthColoring = COLORING_RAINBOW;
 	
     bIsContextReady = false;
+    bIsShuttingDown = false;
     bUseBackBuffer = false;
     bNeedsPose = true;
 	bUseTexture = true;
@@ -62,20 +62,27 @@ ofxOpenNI::ofxOpenNI(){
     height = XN_VGA_Y_RES;
     fps = 30;
     
-    maxNumUsers = 20;
-    userDetectionConfidence =  0.3f;
+    maxNumUsers = 4;
+    userDetectionConfidence = 0.3f;
     
 	CreateRainbowPallet();
-
+	
     logLevel = OF_LOG_NOTICE;
     //setLogLevel(OF_LOG_NOTICE);
 }
 
 //--------------------------------------------------------------
 ofxOpenNI::~ofxOpenNI(){
+    
     // don't use ofLog here!!!
     cout << "ofxOpenNI[" << instanceID << "]: " << "destructor called" << endl;
+    if (bIsShuttingDown) {
+        cout << "ofxOpenNI[" << instanceID << "]: " << "...already shut down" << endl;
+        return;
+    }
+    
     stop();
+    bIsShuttingDown = true;
 }
 
 //--------------------------------------------------------------
@@ -126,26 +133,39 @@ void ofxOpenNI::start(){
 //--------------------------------------------------------------
 void ofxOpenNI::stop(){
     
-    if (!bIsContextReady) return;
-    
     // don't use ofLog here!!!
     cout << "ofxOpenNI[" << instanceID << "]: " << "stop called" << endl;
+    if (bIsShuttingDown) {
+        cout << "ofxOpenNI[" << instanceID << "]: " << "...already shut down" << endl;
+        return;
+    }
+    
+    bIsShuttingDown = true;
+    
+    if (!bIsContextReady) return;
     
     if (bIsThreaded) {
+        cout << "ofxOpenNI[" << instanceID << "]: " << "trying to lock" << endl;
         lock();
+        cout << "ofxOpenNI[" << instanceID << "]: " << "trying to shut down generator" << endl;
+        g_Context.WaitNoneUpdateAll(); // maybe this helps?
         g_Context.StopGeneratingAll();
+        cout << "ofxOpenNI[" << instanceID << "]: " << "trying to unlock" << endl;
         unlock();
         //if (isThreadRunning()) stopThread();
+        cout << "ofxOpenNI[" << instanceID << "]: " << "waiting for thread to end" << endl;
         if (isThreadRunning()) waitForThread(true);
     } else {
         g_Context.StopGeneratingAll();
     }
-
+    
+    cout << "ofxOpenNI[" << instanceID << "]: " << "releasing all nodes" << endl;
+    
     bIsThreaded = false;
     bIsContextReady = false;
-
+	
     instanceCount--; // ok this will probably cause problems when dynamically creating and destroying -> you'd need to do it in order!
-
+	
     g_Depth.Release();
     g_Image.Release();
     g_Infra.Release();
@@ -210,7 +230,7 @@ bool ofxOpenNI::addLicence(string sVendor, string sKey){
     CHECK_ERR_RC(nRetVal, "Error creating vendor: " + sVendor);
     nRetVal = xnOSStrNCopy(license.strKey, sKey.c_str(), sKey.size(), sizeof(license.strKey));
     ok = (nRetVal == XN_STATUS_OK);
-    CHECK_ERR_RC(nRetVal, "Error creating key: " + sKey);	
+    CHECK_ERR_RC(nRetVal, "Error creating key: " + sKey);
     nRetVal = g_Context.AddLicense(license);
     ok = (nRetVal == XN_STATUS_OK);
     SHOW_RC(nRetVal, "Adding licence: " + sVendor + " " + sKey);
@@ -241,7 +261,7 @@ void ofxOpenNI::logErrors(xn::EnumerationErrors & errors){
 		XnChar desc[512];
 		xnProductionNodeDescriptionToString(&it.Description(), desc, 512);
 		ofLog(OF_LOG_ERROR, "%s failed: %s\n", desc, xnGetStatusString(it.Error()));
-	}	
+	}
 }
 
 //--------------------------------------------------------------
@@ -300,9 +320,6 @@ bool ofxOpenNI::addImageGenerator(){
 		nRetVal = g_Image.StartGenerating();
 		SHOW_RC(nRetVal, "Starting image generator");
         g_bIsImageOn = (nRetVal == XN_STATUS_OK);
-		if (g_bIsImageOn) {
-			ofLogNotice(LOG_NAME) << "Starting image generator";
-		}
 	} else {
 		ofLogError(LOG_NAME) << "Image generator is invalid!";
 	}
@@ -354,9 +371,9 @@ bool ofxOpenNI::addUserGenerator(){
     
     if (instanceID > 0) {
         ofLogWarning(LOG_NAME) << "Currently it seems only possible to have a user generator on one device in a single process!!";
-        // some people say it could be done like thus: http://openni-discussions.979934.n3.nabble.com/OpenNI-dev-Skeleton-tracking-with-multiple-kinects-not-solved-with-new-OpenNI-td2832613.html ... but itdidn't work for me .... 
+        // some people say it could be done like thus: http://openni-discussions.979934.n3.nabble.com/OpenNI-dev-Skeleton-tracking-with-multiple-kinects-not-solved-with-new-OpenNI-td2832613.html ... but itdidn't work for me ....
         // ok it's not possible yet according to: http://groups.google.com/group/openni-dev/browse_thread/thread/188a2ac823584117
-        return false;   // uncomment this to see what happens
+        return false; // uncomment this to see what happens
     }
     
     if (!bIsContextReady){
@@ -512,10 +529,7 @@ bool ofxOpenNI::allocateUsers(){
     XnStatus nRetVal = XN_STATUS_OK;
     bool ok = false;
     
-    setMaxNumUsers(10); // default to 4
-    
-    // set to verbose for now
-    ofSetLogLevel(CALLBACK_LOG_NAME, OF_LOG_VERBOSE);
+    setMaxNumUsers(maxNumUsers); // default to 4
     
     // get user generator reference
     xn::UserGenerator& userGenerator = g_User;
@@ -524,35 +538,37 @@ bool ofxOpenNI::allocateUsers(){
     XnCallbackHandle User_CallbackHandler;
     XnCallbackHandle Calibration_CallbackHandler;
     
-	nRetVal = userGenerator.RegisterUserCallbacks(User_NewUser, User_LostUser, this, User_CallbackHandler);
+	nRetVal = userGenerator.RegisterUserCallbacks(UserCB_handleNewUser, UserCB_handleLostUser, this, User_CallbackHandler);
     BOOL_ERR_RC(nRetVal, "Register user New/Lost callbacks");
     
-	nRetVal = userGenerator.GetSkeletonCap().RegisterToCalibrationStart(UserCalibration_CalibrationStart, this, Calibration_CallbackHandler);
+	nRetVal = userGenerator.GetSkeletonCap().RegisterToCalibrationStart(UserCB_handleCalibrationStart, this, Calibration_CallbackHandler);
     BOOL_ERR_RC(nRetVal, "Register user Calibration Start callback");
     
-	nRetVal = userGenerator.GetSkeletonCap().RegisterToCalibrationComplete(UserCalibration_CalibrationEnd, this, Calibration_CallbackHandler);
+	// nRetVal = userGenerator.GetSkeletonCap().RegisterToCalibrationInProgress(UserCB_handleCalibrationProgress, this, Calibration_CallbackHandler);
+	// BOOL_ERR_RC(nRetVal, "Register user Calibration Progress callback");
+    
+	nRetVal = userGenerator.GetSkeletonCap().RegisterToCalibrationComplete(UserCB_handleCalibrationEnd, this, Calibration_CallbackHandler);
     BOOL_ERR_RC(nRetVal, "Register user Calibration End callback");
     
     // check need for calibration
     if (userGenerator.GetSkeletonCap().NeedPoseForCalibration()){
         ofLogNotice(LOG_NAME) << "User generator DOES require pose for calibration";
         bNeedsPose = true;
-        if(!userGenerator.IsCapabilitySupported(XN_CAPABILITY_POSE_DETECTION)) {
-			ofLogError(LOG_NAME) << "Pose required, but not supported";
-		}
+    } else {
+        ofLogNotice(LOG_NAME) << "User generator DOES NOT require pose for calibration";
+        bNeedsPose = false;
+    }
+    
+    if(!userGenerator.IsCapabilitySupported(XN_CAPABILITY_POSE_DETECTION)) {
+        ofLogError(LOG_NAME) << "Pose detection not supported";
+    } else {
         XnCallbackHandle Pose_CallbackHandler;
-        nRetVal = userGenerator.GetPoseDetectionCap().RegisterToPoseDetected(UserPose_PoseDetected, this, Pose_CallbackHandler);
+        nRetVal = userGenerator.GetPoseDetectionCap().RegisterToPoseDetected(UserCB_handlePoseDetected, this, Pose_CallbackHandler);
         BOOL_ERR_RC(nRetVal, "Register user Pose Detected callback");
         
         nRetVal = userGenerator.GetSkeletonCap().GetCalibrationPose(userCalibrationPose);
         BOOL_ERR_RC(nRetVal, "Get calibration pose");
-        
-        //userGenerator.GetPoseDetectionCap().StartPoseDetection("Psi", user); 
-    } else {
-        ofLogNotice(LOG_NAME) << "User generator DOES NOT require pose for calibration";
-        bNeedsPose = false;
-        //userGenerator.GetSkeletonCap().RequestCalibration(user, TRUE); 
-    } 
+    }
     
 	nRetVal = userGenerator.GetSkeletonCap().SetSkeletonProfile(XN_SKEL_PROFILE_ALL);
     BOOL_RC(nRetVal, "Set skeleton profile");
@@ -569,25 +585,25 @@ bool ofxOpenNI::getUseBackBuffer(){
 	return bUseBackBuffer;
 }
 
-//--------------------------------------------------------------
-void ofxOpenNI::setUseMaskPixels(bool b){
-	bUseMaskPixels = b;
-}
-
-//--------------------------------------------------------------
-bool ofxOpenNI::getUseMaskPixels(){
-	return bUseMaskPixels;
-}
-
-//--------------------------------------------------------------
-void ofxOpenNI::setUsePointClouds(bool b){
-	bUsePointClouds = b;
-}
-
-//--------------------------------------------------------------
-bool ofxOpenNI::getUsePointClouds(){
-	return bUsePointClouds;
-}
+////--------------------------------------------------------------
+//void ofxOpenNI::setUseMaskPixels(bool b){
+// bUseMaskPixels = b;
+//}
+//
+////--------------------------------------------------------------
+//bool ofxOpenNI::getUseMaskPixels(){
+// return bUseMaskPixels;
+//}
+//
+////--------------------------------------------------------------
+//void ofxOpenNI::setUsePointClouds(bool b){
+// bUsePointClouds = b;
+//}
+//
+////--------------------------------------------------------------
+//bool ofxOpenNI::getUsePointClouds(){
+// return bUsePointClouds;
+//}
 
 //--------------------------------------------------------------
 void ofxOpenNI::setUserSmoothing(float smooth){
@@ -615,103 +631,82 @@ float ofxOpenNI::getUserDetectionConfidence(){
 }
 
 //--------------------------------------------------------------
-void ofxOpenNI::startPoseDetection(XnUserID nID){
-    XnStatus nRetVal = XN_STATUS_OK;
-	ofLogNotice(LOG_NAME) << "Start pose detection for user" << nID;
-	nRetVal = g_User.GetPoseDetectionCap().StartPoseDetection(userCalibrationPose, nID);
-    SHOW_RC(nRetVal, "Get pose detection capability - start");
-}
-
-
-//--------------------------------------------------------------
-void ofxOpenNI::stopPoseDetection(XnUserID nID){
-    XnStatus nRetVal = XN_STATUS_OK;
-    ofLogNotice(LOG_NAME) << "Stop pose detection for user" << nID;
-	nRetVal = g_User.GetPoseDetectionCap().StopPoseDetection(nID);
-    CHECK_ERR_RC(nRetVal, "Get pose detection capability - stop");
-}
-
-
-//--------------------------------------------------------------
-void ofxOpenNI::requestCalibration(XnUserID nID){
-    XnStatus nRetVal = XN_STATUS_OK;
-	ofLogNotice(LOG_NAME) << "Calibration requested for user" << nID;
-	nRetVal = g_User.GetSkeletonCap().RequestCalibration(nID, TRUE);
-    CHECK_ERR_RC(nRetVal, "Get skeleton capability - request calibration");
-}
-
-//--------------------------------------------------------------
-void ofxOpenNI::startTracking(XnUserID nID){
-    XnStatus nRetVal = XN_STATUS_OK;
-    ofLogNotice(LOG_NAME) << "Start tracking user" << nID;
-	nRetVal = g_User.GetSkeletonCap().StartTracking(nID);
-    CHECK_ERR_RC(nRetVal, "Get skeleton capability - start tracking");
-}
-
-//--------------------------------------------------------------
 bool ofxOpenNI::needsPoseForCalibration(){
 	return bNeedsPose;
 }
 
 //--------------------------------------------------------------
-int	ofxOpenNI::getNumTrackedUsers(){
-    return currentTrackedUserIDs.size();
-}
-//--------------------------------------------------------------
-int	ofxOpenNI::getNumAnyUsers(){
-  return currentTrackedUsers.size();
+int ofxOpenNI::getNumTrackedUsers(){
+    return currentTrackedUserIDs.size() - 1;
 }
 
 //--------------------------------------------------------------
-ofxOpenNIUser&	ofxOpenNI::getTrackedUser(int nID){
+ofxOpenNIUser& ofxOpenNI::getTrackedUser(int nID){
     return currentTrackedUsers[currentTrackedUserIDs[nID]];
 }
 
 //--------------------------------------------------------------
-ofxOpenNIUser&	ofxOpenNI::getAnyUser(int nID){
-    return currentTrackedUsers[nID];
+ofxOpenNIUser& ofxOpenNI::getUser(int nID){
+    map<XnUserID,ofxOpenNIUser>::iterator it = currentTrackedUsers.find(nID);
+    if (it != currentTrackedUsers.end()){
+        return (*it).second;
+    } else {
+        ofLogError() << "User ID not found. Probably you need to setMaxNumUsers to a higher value! Returning a dummy user (it doesn't do anything!!!)!";
+        return staticDummyUser;
+    }
 }
 
 //--------------------------------------------------------------
 void ofxOpenNI::setMaxNumUsers(int numUsers){
     if (bIsThreaded) Poco::ScopedLock<ofMutex> lock();
     maxNumUsers = numUsers;
-    currentTrackedUsers.clear();
-    for (int i = 0; i < maxNumUsers; ++i) {
-        ofxOpenNIUser & user = currentTrackedUsers[i];
-        user.bIsTracking = false;
+    int oldMaxUsers = currentTrackedUsers.size();
+    
+    if (maxNumUsers < oldMaxUsers) {
+        for (XnUserID nID = maxNumUsers + 1; nID <= oldMaxUsers; ++nID){
+            map<XnUserID, ofxOpenNIUser>::iterator it = currentTrackedUsers.find(nID);
+            currentTrackedUsers.erase(it);
+        }
+    } else {
+        for (XnUserID nID = oldMaxUsers + 1; nID <= maxNumUsers; ++nID){
+            ofxOpenNIUser user;
+            user.id = nID;
+            currentTrackedUsers.insert(pair<XnUserID, ofxOpenNIUser>(nID, user));
+        }
     }
+    
+    ofLogVerbose(LOG_NAME) << "Resized tracked user map from" << oldMaxUsers << "to" << currentTrackedUsers.size();
 }
 
 //--------------------------------------------------------------
-int	ofxOpenNI::getMaxNumUsers(){
-    return maxNumUsers;
+int ofxOpenNI::getMaxNumUsers(){
+    return maxNumUsers; // currentTrackedUsers.size()
 }
 
 //--------------------------------------------------------------
 void ofxOpenNI::updateUsers(){
-
+	
     // get user generator reference
     xn::UserGenerator& userGenerator = g_User;
     
 	vector<XnUserID> userIDs(maxNumUsers);
-    XnUInt16 xnMaxNumUsers = maxNumUsers;
+    XnUInt16 xnMaxNumUsers = maxNumUsers + 1;
     if (xnMaxNumUsers < userGenerator.GetNumberOfUsers()){
-        ofLogWarning() << "maxNumUsers is set lower than the current number of users...increase them with setMaxNumUsers()";
+        //ofLogWarning() << "maxNumUsers is set lower than the current number of users...increase them with setMaxNumUsers()";
     }
 	userGenerator.GetUsers(&userIDs[0], xnMaxNumUsers);
     
 	set<XnUserID> trackedUserIDs;
-
-	for (int i = 0; i < maxNumUsers; ++i) {
+	
+	for (int i = 0; i < maxNumUsers + 1; ++i) {
 		if (userGenerator.GetSkeletonCap().IsTracking(userIDs[i])) {
 			ofxOpenNIUser & user = currentTrackedUsers[userIDs[i]];
-            user.bIsTracking = true;
 			user.id = userIDs[i];
 			XnPoint3D center;
 			userGenerator.GetCoM(userIDs[i], center);
 			user.center = toOf(center);
-            
+            bool lastbIsSkeleton = user.bIsSkeleton;
+            user.bIsSkeleton = false;
 			for (int j=0; j<ofxOpenNIUser::NumLimbs; j++){
 				XnSkeletonJointPosition a,b;
 				userGenerator.GetSkeletonCap().GetSkeletonJointPosition(user.id, user.limbs[j].start_joint, a);
@@ -721,41 +716,46 @@ void ofxOpenNI::updateUsers(){
 					user.limbs[j].found = false;
 					continue;
 				}
-                
 				user.limbs[j].found = true;
 				user.limbs[j].begin = worldToProjective(a.position);
 				user.limbs[j].end = worldToProjective(b.position);
 				user.limbs[j].worldBegin = toOf(a.position);
 				user.limbs[j].worldEnd = toOf(b.position);
+                user.bIsSkeleton = true;
 			}
             
-			if (bUsePointClouds) updatePointClouds(user);
-			if (bUseMaskPixels) updateUserPixels(user);
+            if (user.bIsSkeleton != lastbIsSkeleton){
+                ofxOpenNIUserEvent event = ofxOpenNIUserEvent(user.id, instanceID, (user.bIsSkeleton ? USER_SKELETON_FOUND : USER_SKELETON_LOST));
+                ofNotifyEvent(userEvent, event, this);
+            }
+            
+			if (user.bUsePointCloud) updatePointClouds(user);
+			if (user.bUseMaskPixels) updateUserPixels(user);
             
 			trackedUserIDs.insert(user.id);
 		}
 	}
     
-	set<XnUserID>::iterator it;
-	for (it = previousTrackedUserIDs.begin(); it != previousTrackedUserIDs.end(); it++){
-		if (trackedUserIDs.find(*it) == trackedUserIDs.end()){
-			//currentTrackedUsers.erase(*it);
-            ofxOpenNIUser & user = currentTrackedUsers[*it];
-            user.bIsTracking = false;
-		}
-	}
-
-	previousTrackedUserIDs = trackedUserIDs;
-	currentTrackedUserIDs.assign(previousTrackedUserIDs.begin(), previousTrackedUserIDs.end());
-    
+	// set<XnUserID>::iterator it;
+	// for (it = previousTrackedUserIDs.begin(); it != previousTrackedUserIDs.end(); it++){
+	// if (trackedUserIDs.find(*it) == trackedUserIDs.end()){
+	// //currentTrackedUsers.erase(*it);
+	// ofxOpenNIUser & user = currentTrackedUsers[*it];
+	// //user.bIsTracking = false;
+	// }
+	// }
+	//
+	// previousTrackedUserIDs = trackedUserIDs;
+	// currentTrackedUserIDs.assign(previousTrackedUserIDs.begin(), previousTrackedUserIDs.end());
+    currentTrackedUserIDs.assign(trackedUserIDs.begin(), trackedUserIDs.end());
 	//if (useMaskPixels) updateUserPixels();
 }
 
 //--------------------------------------------------------------
 void ofxOpenNI::updatePointClouds(ofxOpenNIUser & user){
     
-	const XnRGB24Pixel*	pColor;
-	const XnDepthPixel*	pDepth = g_DepthMD.Data();
+	const XnRGB24Pixel* pColor;
+	const XnDepthPixel* pDepth = g_DepthMD.Data();
     
 	if (g_bIsImageOn) {
 		pColor = g_ImageMD.RGB24Data();
@@ -798,17 +798,18 @@ void ofxOpenNI::updateUserPixels(ofxOpenNIUser & user){
 	xn::SceneMetaData smd;
 	unsigned short *userPix;
     
-	if (g_User.GetUserPixels(user.id, smd) == XN_STATUS_OK) { //	GetUserPixels is supposed to take a user ID number,
-		userPix = (unsigned short*)smd.Data();					//  but you get the same data no matter what you pass.
-	}															//	userPix actually contains an array where each value
-    //  corresponds to the user being tracked.
-    //  Ie.,	if userPix[i] == 0 then it's not being tracked -> it's the background!
-    //			if userPix[i] > 0 then the pixel belongs to the user who's value IS userPix[i]
-    //  // (many thanks to ascorbin who's code made this apparent to me)
+	if (g_User.GetUserPixels(user.id, smd) == XN_STATUS_OK) { // GetUserPixels is supposed to take a user ID number,
+		userPix = (unsigned short*)smd.Data(); // but you get the same data no matter what you pass.
+	} // userPix actually contains an array where each value
+    // corresponds to the user being tracked.
+    // Ie., if userPix[i] == 0 then it's not being tracked -> it's the background!
+    // if userPix[i] > 0 then the pixel belongs to the user who's value IS userPix[i]
+    // // (many thanks to ascorbin who's code made this apparent to me)
     
-    if (!user.bIsAllocated || (user.maskPixels.getWidth() != getWidth() || user.maskPixels.getHeight() != getHeight())){
+	
+    if (user.maskPixels.getWidth() != getWidth() || user.maskPixels.getHeight() != getHeight()){
         user.maskPixels.allocate(getWidth(), getHeight(), OF_IMAGE_COLOR_ALPHA);
-        if (user.bUseTexture) user.maskTexture.allocate(getWidth(), getHeight(), GL_RGBA);
+        if (user.bUseMaskTexture) user.maskTexture.allocate(getWidth(), getHeight(), GL_RGBA);
     }
 	
     int nIndex = 0;
@@ -829,7 +830,7 @@ void ofxOpenNI::updateUserPixels(ofxOpenNIUser & user){
         }
     }
     
-    if (user.bUseTexture) user.maskTexture.loadData(user.maskPixels.getPixels(), getWidth(), getHeight(), GL_RGBA);
+    if (user.bUseMaskTexture) user.maskTexture.loadData(user.maskPixels.getPixels(), getWidth(), getHeight(), GL_RGBA);
 }
 
 //--------------------------------------------------------------
@@ -837,18 +838,16 @@ void ofxOpenNI::updateFrame(){
     
 	//if (bIsThreaded) lock(); // with this here I get ~30 fps with 2 Kinects
 	
-    if (!bIsContextReady){
-		cout << "Context is not ready. Can't update frame!"<<endl;
-		return;
-    }
+    if (!bIsContextReady) return;
+    
     g_Context.WaitAnyUpdateAll();
     
-//    this doesn't seem as fast/smooth, but is more 'correct':
-//    if (g_bIsUserOn) {
-//        g_Context.WaitOneUpdateAll(g_User);
-//    } else {
-//        g_Context.WaitAnyUpdateAll();
-//    }
+	// this doesn't seem as fast/smooth, but is more 'correct':
+	// if (g_bIsUserOn) {
+	// g_Context.WaitOneUpdateAll(g_User);
+	// } else {
+	// g_Context.WaitAnyUpdateAll();
+	// }
     //if (bIsThreaded) lock(); // with this her I get ~300-400+ fps with 2 Kinects!
     
 	if (g_bIsDepthOn && g_Depth.IsDataNew()) g_Depth.GetMetaData(g_DepthMD);
@@ -860,24 +859,24 @@ void ofxOpenNI::updateFrame(){
     if (g_bIsDepthOn) generateDepthPixels();
 	if (g_bIsImageOn) generateImagePixels();
 	if (g_bIsInfraOn) generateIRPixels();
-
-// NB: Below info is from my old single context setup - need to retest with this new multicontext setup!  
-// NEW SETUP for 12 frames tested avg -69.33ms latency with 2 x kinects (high ~80ms, low ~50ms)
-
-// I really don't think it's necessary to back buffer the image/ir/depth pixels
-// as I understand it the GetMetaData() call is already acting as a back buffer
-// since it is fetching the pixel data from the xn::Context which we then 'copy'
-// during our generateDepth/Image/IRPixels() methods...
-
-// my tests show that it adds between ~10 to ~15 milliseconds to capture <-> screen latency 
-// ie., the time between something occuring in the physical world, it's capture and subsequent display onscreen.
+	
+	// NB: Below info is from my old single context setup - need to retest with this new multicontext setup!
+	// NEW SETUP for 12 frames tested avg -69.33ms latency with 2 x kinects (high ~80ms, low ~50ms)
+	
+	// I really don't think it's necessary to back buffer the image/ir/depth pixels
+	// as I understand it the GetMetaData() call is already acting as a back buffer
+	// since it is fetching the pixel data from the xn::Context which we then 'copy'
+	// during our generateDepth/Image/IRPixels() methods...
+	
+	// my tests show that it adds between ~10 to ~15 milliseconds to capture <-> screen latency
+	// ie., the time between something occuring in the physical world, it's capture and subsequent display onscreen.
     
-// without back buffering my tests show 55 to 65ms, avg 61.5ms (consistent frame times, ie., no outliers in small samples)
-// with back buffering my tests show 70 to 80ms, avg 73.8ms (this does not include outliers ie., usually 1 in 7 frames showing 150-275ms latency!)
-
-// NB: the above tests were done with 2 Kinects...with one Kinect (and not using backbuffering) I get between 50-60ms, avg ~53ms 
-// (with some more outliers though one frame 33ms (!) andother 95ms(!))....hmmmm   
-
+	// without back buffering my tests show 55 to 65ms, avg 61.5ms (consistent frame times, ie., no outliers in small samples)
+	// with back buffering my tests show 70 to 80ms, avg 73.8ms (this does not include outliers ie., usually 1 in 7 frames showing 150-275ms latency!)
+	
+	// NB: the above tests were done with 2 Kinects...with one Kinect (and not using backbuffering) I get between 50-60ms, avg ~53ms
+	// (with some more outliers though one frame 33ms (!) andother 95ms(!))....hmmmm
+	
     if (bUseBackBuffer){
         if (g_bIsDepthOn){
             swap(backDepthPixels, currentDepthPixels);
@@ -897,11 +896,9 @@ void ofxOpenNI::updateFrame(){
 
 //--------------------------------------------------------------
 void ofxOpenNI::update(){
-
-    if (!bIsContextReady){
-		cout << "Context is not ready. Can't update!"<<endl;
-		return;
-    }
+	
+    if (!bIsContextReady) return;
+    
 	if (!bIsThreaded){
 		updateFrame();
 	} else {
@@ -928,9 +925,9 @@ void ofxOpenNI::update(){
         
 		bNewPixels = false;
 		bNewFrame = true;
-
+		
 	}
-
+	
 	if (bIsThreaded) unlock();
 }
 void cleanupHandler(void *cookie){
@@ -1039,15 +1036,21 @@ void ofxOpenNI::drawDebug(float x, float y, float w, float h){
     
     ofPushMatrix();
     if (g_bIsDepthOn) drawDepth();
-    if (g_bIsUserOn) drawUsers();
+    if (g_bIsUserOn) drawSkeletons();
     ofTranslate(getWidth(), 0.0f);
     if (g_bIsImageOn) drawImage();
     if (g_bIsInfraOn) drawImage();
+    if (g_bIsUserOn){
+        if (g_bIsImageOn || g_bIsInfraOn) ofTranslate(-getWidth(), 0.0f);
+        for (int nID = 1; nID <= maxNumUsers; nID++) {
+            ofxOpenNIUser & user = getUser(nID);
+            ofSetColor(255, 255, 0);
+            ofDrawBitmapString(user.getDebugInfo(), 8, getHeight() + (nID) * 30);
+        }
+    }
     ofPopMatrix();
-    
     ofPopMatrix();
     ofPopStyle();
-	//cout << "Generator Count: " << generatorCount<<endl;
 }
 
 //--------------------------------------------------------------
@@ -1081,37 +1084,37 @@ void ofxOpenNI::drawImage(float x, float y, float w, float h){
 }
 
 //--------------------------------------------------------------
-void ofxOpenNI::drawUsers(){
-    if (bIsContextReady) drawUsers(0.0f, 0.0f, getWidth(), getHeight());
+void ofxOpenNI::drawSkeletons(){
+    if (bIsContextReady) drawSkeletons(0.0f, 0.0f, getWidth(), getHeight());
 }
 
 //--------------------------------------------------------------
-void ofxOpenNI::drawUsers(float x, float y){
-	if (bIsContextReady) drawUsers(x, y, getWidth(), getHeight());
+void ofxOpenNI::drawSkeletons(float x, float y){
+	if (bIsContextReady) drawSkeletons(x, y, getWidth(), getHeight());
 }
 
 //--------------------------------------------------------------
-void ofxOpenNI::drawUsers(float x, float y, float w, float h){
+void ofxOpenNI::drawSkeletons(float x, float y, float w, float h){
 	if (!bIsContextReady) return;
     ofPushStyle();
-    for(int i = 0;  i < (int)currentTrackedUserIDs.size(); ++i){
-        drawUser(x, y, w, h, i);
+    for(int i = 0; i < (int)currentTrackedUserIDs.size(); ++i){
+        drawSkeleton(x, y, w, h, i);
     }
 	ofPopStyle();
 }
 
 //--------------------------------------------------------------
-void ofxOpenNI::drawUser(int nID){
-	drawUser(0.0f, 0.0f, getWidth(), getHeight(), nID);
+void ofxOpenNI::drawSkeleton(int nID){
+	drawSkeleton(0.0f, 0.0f, getWidth(), getHeight(), nID);
 }
 
 //--------------------------------------------------------------
-void ofxOpenNI::drawUser(float x, float y, int nID){
-	drawUser(x, y, getWidth(), getHeight(), nID);
+void ofxOpenNI::drawSkeleton(float x, float y, int nID){
+	drawSkeleton(x, y, getWidth(), getHeight(), nID);
 }
 
 //--------------------------------------------------------------
-void ofxOpenNI::drawUser(float x, float y, float w, float h, int nID){
+void ofxOpenNI::drawSkeleton(float x, float y, float w, float h, int nID){
 	if(nID - 1 > (int)currentTrackedUserIDs.size()) return;
     ofPushMatrix();
     ofTranslate(x, y);
@@ -1224,36 +1227,36 @@ void ofxOpenNI::generateDepthPixels(){
 					col_index = (XnUInt16)(((*depth) / (maxDepth / max)));
 					if ( col_index < 256 )
 					{
-						blue	= col_index;
-						green	= 0;
-						red		= 0;
+						blue = col_index;
+						green = 0;
+						red = 0;
 					}
 					else if ( col_index < (256+255) )
 					{
-						blue	= 255;
-						green	= (col_index % 256) + 1;
-						red		= 0;
+						blue = 255;
+						green = (col_index % 256) + 1;
+						red = 0;
 					}
 					else if ( col_index < (256+255+255) )
 					{
-						blue	= 255;
-						green	= 255;
-						red		= (col_index % 256) + 1;
+						blue = 255;
+						green = 255;
+						red = (col_index % 256) + 1;
 					}
 					else
 					{
-						blue	= 255;
-						green	= 255;
-						red		= 255;
+						blue = 255;
+						green = 255;
+						red = 255;
 					}
 					break;
 				case COLORING_GREY:
-					max = 255;	// half depth
+					max = 255; // half depth
 				{
 					XnUInt8 a = (XnUInt8)(((*depth) / (maxDepth / max)));
-					red		= a;
-					green	= a;
-					blue	= a;
+					red = a;
+					green = a;
+					blue = a;
 				}
 					break;
 				case COLORING_STATUS:
@@ -1266,11 +1269,11 @@ void ofxOpenNI::generateDepthPixels(){
 #if 0
 				{
 					extern bool status;
-					max = 255;	// half depth
+					max = 255; // half depth
 					XnUInt8 a = 255 - (XnUInt8)(((*depth) / (maxDepth / max)));
-					red		= ( status ? 0 : a);
-					green	= ( status ? a : 0);
-					blue	= 0;
+					red = ( status ? 0 : a);
+					green = ( status ? a : 0);
+					blue = 0;
 				}
 #endif
 					break;
@@ -1481,7 +1484,7 @@ bool ofxOpenNI::setGeneratorResolution(MapGenerator & generator, int w, int h, i
     
     XnMapOutputMode mapMode;
     XnStatus nRetVal = XN_STATUS_OK;
-    mapMode.nXRes = w; mapMode.nYRes = h; mapMode.nFPS  = f;
+    mapMode.nXRes = w; mapMode.nYRes = h; mapMode.nFPS = f;
     
     if (generator.IsValid()){
         nRetVal = generator.SetMapOutputMode(mapMode);
@@ -1550,9 +1553,7 @@ ofPoint ofxOpenNI::projectiveToWorld(const XnVector3D& p){
 ofPoint ofxOpenNI::cameraToWorld(const ofVec2f& c){
 	vector<ofVec2f> vc(1, c);
 	vector<ofVec3f> vw(1);
-	
 	cameraToWorld(vc, vw);
-	
 	return vw[0];
 }
 
@@ -1572,7 +1573,7 @@ void ofxOpenNI::cameraToWorld(const vector<ofVec2f>& c, vector<ofVec3f>& w){
 	const XnDepthPixel* d = currentDepthRawPixels->getPixels();
 	unsigned int pixel;
 	for (int i=0; i<nPoints; ++i){
-		pixel  = (int)c[i].x + (int)c[i].y * g_DepthMD.XRes();
+		pixel = (int)c[i].x + (int)c[i].y * g_DepthMD.XRes();
 		if (pixel >= g_DepthMD.XRes() * g_DepthMD.YRes())
 			continue;
 		
@@ -1583,16 +1584,105 @@ void ofxOpenNI::cameraToWorld(const vector<ofVec2f>& c, vector<ofVec3f>& w){
 	//unlock();
 	
 	g_Depth.ConvertProjectiveToRealWorld(nPoints,&projective[0], (XnPoint3D*)&w[0]);
-	
 }
 
-// USER GENERATOR CALLBACKS
+// USER GENERATOR CALLBACKS AND HANDLE HELPER FUNCTIONS
 // =============================================================
 
 //--------------------------------------------------------------
-void XN_CALLBACK_TYPE ofxOpenNI::User_NewUser(xn::UserGenerator& rGenerator, XnUserID nID, void* pCookie){
+void ofxOpenNI::startTracking(XnUserID nID){
+    XnStatus nRetVal = XN_STATUS_OK;
+    if (nID > maxNumUsers){
+        ofLogVerbose(LOG_NAME) << "Start tracking cancelled for user" << nID << "since maxNumUsers is" << maxNumUsers;
+        stopTracking(nID);
+        return;
+    } else {
+        ofLogNotice(LOG_NAME) << "Start tracking user" << nID;
+    }
+	nRetVal = g_User.GetSkeletonCap().StartTracking(nID);
+    CHECK_ERR_RC(nRetVal, "Get skeleton capability - start tracking");
+    if (nRetVal == XN_STATUS_OK) {
+        ofxOpenNIUserEvent event = ofxOpenNIUserEvent(nID, instanceID, USER_TRACKING_STARTED);
+        ofNotifyEvent(userEvent, event, this);
+        currentTrackedUsers[nID].bIsFound = true;
+        currentTrackedUsers[nID].bIsTracking = true;
+        currentTrackedUsers[nID].bIsCalibrating = false;
+    }
+}
+
+//--------------------------------------------------------------
+void ofxOpenNI::stopTracking(XnUserID nID){
+    XnStatus nRetVal = XN_STATUS_OK;
+    ofLogNotice(LOG_NAME) << "Stop tracking user" << nID;
+    if (g_User.GetSkeletonCap().IsTracking(nID)){
+        nRetVal = g_User.GetSkeletonCap().Reset(nID);
+        CHECK_ERR_RC(nRetVal, "Get skeleton capability - stop tracking (maybe we didn't have a skeleton?");
+    }
+    if (nID > maxNumUsers) return;
+    ofxOpenNIUserEvent event = ofxOpenNIUserEvent(nID, instanceID, USER_TRACKING_STOPPED);
+    ofNotifyEvent(userEvent, event, this);
+    currentTrackedUsers[nID].bIsFound = false;
+    currentTrackedUsers[nID].bIsTracking = false;
+    currentTrackedUsers[nID].bIsCalibrating = false;
+}
+
+//--------------------------------------------------------------
+void ofxOpenNI::requestCalibration(XnUserID nID){
+    XnStatus nRetVal = XN_STATUS_OK;
+    if (nID > maxNumUsers){
+        ofLogVerbose(LOG_NAME) << "Calibration requested cancelled for user" << nID << "since maxNumUsers is" << maxNumUsers;
+        return;
+    } else {
+        ofLogNotice(LOG_NAME) << "Calibration requested for user" << nID;
+    }
+	nRetVal = g_User.GetSkeletonCap().RequestCalibration(nID, TRUE);
+    CHECK_ERR_RC(nRetVal, "Get skeleton capability - request calibration");
+    if (nRetVal == XN_STATUS_OK) {
+        ofxOpenNIUserEvent event = ofxOpenNIUserEvent(nID, instanceID, USER_CALIBRATION_STARTED);
+        ofNotifyEvent(userEvent, event, this);
+        currentTrackedUsers[nID].bIsFound = true;
+        currentTrackedUsers[nID].bIsCalibrating = true;
+    }
+}
+
+//--------------------------------------------------------------
+void ofxOpenNI::startPoseDetection(XnUserID nID){
+    XnStatus nRetVal = XN_STATUS_OK;
+    if (nID > maxNumUsers){
+        ofLogVerbose(LOG_NAME) << "Pose detection cancelled for user" << nID << "since maxNumUsers is" << maxNumUsers;
+        stopPoseDetection(nID);
+        return;
+    } else {
+        ofLogNotice(LOG_NAME) << "Start pose detection for user" << nID;
+    }
+	nRetVal = g_User.GetPoseDetectionCap().StartPoseDetection(userCalibrationPose, nID);
+    SHOW_RC(nRetVal, "Get pose detection capability - start");
+    if (nRetVal == XN_STATUS_OK) {
+        ofxOpenNIUserEvent event = ofxOpenNIUserEvent(nID, instanceID, USER_CALIBRATION_STARTED);
+        ofNotifyEvent(userEvent, event, this);
+        currentTrackedUsers[nID].bIsFound = true;
+        currentTrackedUsers[nID].bIsCalibrating = true;
+    }
+}
+
+//--------------------------------------------------------------
+void ofxOpenNI::stopPoseDetection(XnUserID nID){
+    XnStatus nRetVal = XN_STATUS_OK;
+    ofLogNotice(LOG_NAME) << "Stop pose detection for user" << nID;
+	nRetVal = g_User.GetPoseDetectionCap().StopPoseDetection(nID);
+    CHECK_ERR_RC(nRetVal, "Get pose detection capability - stop");
+    if (nID > maxNumUsers) return;
+    if (nRetVal == XN_STATUS_OK) {
+        ofxOpenNIUserEvent event = ofxOpenNIUserEvent(nID, instanceID, USER_CALIBRATION_STOPPED);
+        ofNotifyEvent(userEvent, event, this);
+        currentTrackedUsers[nID].bIsCalibrating = false;
+    }
+}
+
+//--------------------------------------------------------------
+void XN_CALLBACK_TYPE ofxOpenNI::UserCB_handleNewUser(xn::UserGenerator& userGenerator, XnUserID nID, void* pCookie){
     ofxOpenNI* openNI = static_cast<ofxOpenNI*>(pCookie);
-	ofLogVerbose(CALLBACK_LOG_NAME) << "Device[" << openNI->getDeviceID() << "]" << "New User" << nID;
+	ofLogVerbose(openNI->LOG_NAME) << "(CB) New User" << nID;
 	if(openNI->needsPoseForCalibration()) {
 		openNI->startPoseDetection(nID);
 	} else {
@@ -1601,39 +1691,45 @@ void XN_CALLBACK_TYPE ofxOpenNI::User_NewUser(xn::UserGenerator& rGenerator, XnU
 }
 
 //--------------------------------------------------------------
-void XN_CALLBACK_TYPE ofxOpenNI::User_LostUser(xn::UserGenerator& rGenerator, XnUserID nID, void* pCookie){
+void XN_CALLBACK_TYPE ofxOpenNI::UserCB_handleLostUser(xn::UserGenerator& userGenerator, XnUserID nID, void* pCookie){
     ofxOpenNI* openNI = static_cast<ofxOpenNI*>(pCookie);
-	ofLogVerbose(CALLBACK_LOG_NAME) << "Device[" << openNI->getDeviceID() << "]" << "Lost user" << nID;
-	rGenerator.GetSkeletonCap().Reset(nID);
+	ofLogVerbose(openNI->LOG_NAME) << "(CB) Lost user" << nID;
+	openNI->stopTracking(nID);
     
 }
 
 //--------------------------------------------------------------
-void XN_CALLBACK_TYPE ofxOpenNI::UserPose_PoseDetected(xn::PoseDetectionCapability& rCapability, const XnChar* strPose, XnUserID nID, void* pCookie){
+void XN_CALLBACK_TYPE ofxOpenNI::UserCB_handlePoseDetected(xn::PoseDetectionCapability& poseDetectionCapability, const XnChar* strPose, XnUserID nID, void* pCookie){
     ofxOpenNI* openNI = static_cast<ofxOpenNI*>(pCookie);
-	ofLogVerbose(CALLBACK_LOG_NAME) << "Device[" << openNI->getDeviceID() << "]" << "Pose" << strPose << "detected for user" << nID;
+	ofLogVerbose(openNI->LOG_NAME) << "(CB) Pose" << strPose << "detected for user" << nID;
 	openNI->requestCalibration(nID);
 	openNI->stopPoseDetection(nID);
 }
 
 
 //--------------------------------------------------------------
-void XN_CALLBACK_TYPE ofxOpenNI::UserCalibration_CalibrationStart(xn::SkeletonCapability& capability, XnUserID nID, void* pCookie){
+void XN_CALLBACK_TYPE ofxOpenNI::UserCB_handleCalibrationStart(xn::SkeletonCapability& skeletonCapability, XnUserID nID, void* pCookie){
     ofxOpenNI* openNI = static_cast<ofxOpenNI*>(pCookie);
-	ofLogVerbose(CALLBACK_LOG_NAME) << "Device[" << openNI->getDeviceID() << "]" << "Calibration start for user" << nID;
+	ofLogVerbose(openNI->LOG_NAME) << "(CB) Calibration start for user" << nID;
 }
 
+////--------------------------------------------------------------
+//void XN_CALLBACK_TYPE ofxOpenNI::UserCB_handleCalibrationProgress(xn::SkeletonCapability& skeletonCapability, XnUserID nID, XnCalibrationStatus calibrationStatus, void* pCookie){
+// ofxOpenNI* openNI = static_cast<ofxOpenNI*>(pCookie);
+// ofLogVerbose(openNI->LOG_NAME) << "(CB) Calibration progress for user" << nID << calibrationStatus << getCalibrationStatusAsString(calibrationStatus);
+// //openNI->handleCalibrationProgress(nID, calibrationStatus);
+//}
 
 //--------------------------------------------------------------
-void XN_CALLBACK_TYPE ofxOpenNI::UserCalibration_CalibrationEnd(xn::SkeletonCapability& rCapability, XnUserID nID, XnCalibrationStatus bSuccess, void* pCookie){
+void XN_CALLBACK_TYPE ofxOpenNI::UserCB_handleCalibrationEnd(xn::SkeletonCapability& skeletonCapability, XnUserID nID, XnCalibrationStatus calibrationStatus, void* pCookie){
     ofxOpenNI* openNI = static_cast<ofxOpenNI*>(pCookie);
-	ofLogVerbose(CALLBACK_LOG_NAME) << "Device[" << openNI->getDeviceID() << "]" << "Calibration end for user..." << nID;
-	if(bSuccess == XN_CALIBRATION_STATUS_OK) {
-		ofLogVerbose(CALLBACK_LOG_NAME) << "Device[" << openNI->getDeviceID() << "]" << "...success" << nID;
+	ofLogVerbose(openNI->LOG_NAME) << "(CB) Calibration end for user..." << nID;
+	if(calibrationStatus == XN_CALIBRATION_STATUS_OK) {
+		ofLogVerbose(openNI->LOG_NAME) << "...success" << nID;
 		openNI->startTracking(nID);
 	} else {
-        ofLogVerbose(CALLBACK_LOG_NAME) << "Device[" << openNI->getDeviceID() << "]" << "...fail" << nID;
-		if(openNI->needsPoseForCalibration()) {
+        ofLogVerbose(openNI->LOG_NAME) << "...fail" << nID;
+		if(openNI->needsPoseForCalibration() || !openNI->getUser(nID).bUseAutoCalibration) {
 			openNI->startPoseDetection(nID);
 		} else {
 			openNI->requestCalibration(nID);

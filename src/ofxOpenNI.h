@@ -26,7 +26,7 @@
  *
  */
 
-#ifndef	_H_OFXOPENNI
+#ifndef _H_OFXOPENNI
 #define _H_OFXOPENNI
 
 #include <set.h>
@@ -43,7 +43,7 @@
 #include "ofPixels.h"
 #include "ofTexture.h"
 #include "ofThread.h"
-#include "ofAppRunner.h"
+#include "ofEvents.h"
 
 #include "ofxOpenNIUser.h"
 #include "ofxOpenNIUtils.h"
@@ -55,17 +55,6 @@ using namespace xn;
 class ofxOpenNI : public ofThread {
 	
 public:
-	
-	enum DepthColoring {
-		COLORING_PSYCHEDELIC_SHADES = 0,
-		COLORING_PSYCHEDELIC,
-		COLORING_RAINBOW,
-		COLORING_CYCLIC_RAINBOW,
-		COLORING_BLUES,
-		COLORING_GREY,
-		COLORING_STATUS,
-		COLORING_COUNT
-	};
 	
 	ofxOpenNI();
 	~ofxOpenNI();
@@ -82,7 +71,7 @@ public:
 	bool addAudioGenerator();
 	bool addUserGenerator();
 	bool addPlayerGenerator();
-
+	
     bool removeDepthGenerator();
     bool removeImageGenerator();
     bool removeInfraGenerator();
@@ -104,16 +93,16 @@ public:
 	void drawImage(float x, float y);
 	void drawImage(float x, float y, float w, float h);
 	
-    void drawUsers();
-    void drawUsers(float x, float y);
-    void drawUsers(float x, float y, float w, float h);
+    void drawSkeletons();
+    void drawSkeletons(float x, float y);
+    void drawSkeletons(float x, float y, float w, float h);
     
-    void drawUser(int nID);
-    void drawUser(float x, float y, int nID);
-    void drawUser(float x, float y, float w, float, int nID);
+    void drawSkeleton(int nID);
+    void drawSkeleton(float x, float y, int nID);
+    void drawSkeleton(float x, float y, float w, float, int nID);
     
     bool setResolution(int w, int h, int fps);
-
+	
 	float getWidth();
 	float getHeight();
 	
@@ -134,20 +123,19 @@ public:
 	void setUseTexture(bool useTexture);
 	void setDepthColoring(DepthColoring coloring);
 	
-    int	getNumTrackedUsers();
-	int getNumAnyUsers();
+    int getNumTrackedUsers();
     
-    ofxOpenNIUser&	getTrackedUser(int nID); // only returns tracked users
-    ofxOpenNIUser& getAnyUser(int nID); // returns any user (whether tracked or not)
+    ofxOpenNIUser& getTrackedUser(int nID); // only returns tracked users
+    ofxOpenNIUser& getUser(int nID); // finds a user if it exists (whether tracked or not)
     
     void setMaxNumUsers(int numUsers);
-    int	getMaxNumUsers();
+    int getMaxNumUsers();
     
-    void setUseMaskPixels(bool b);
-    bool getUseMaskPixels();
-    
-	void setUsePointClouds(bool b);
-    bool getUsePointClouds();
+	// void setUseMaskPixels(bool b);
+	// bool getUseMaskPixels();
+	//
+	// void setUsePointClouds(bool b);
+	// bool getUsePointClouds();
     
     void setUseBackBuffer(bool b);
     bool getUseBackBuffer();
@@ -182,7 +170,7 @@ public:
     
     xn::Context& getContext();
 	xn::Device& getDevice();
-   
+	
 	xn::DepthGenerator& getDepthGenerator();
 	xn::ImageGenerator& getImageGenerator();
 	xn::IRGenerator& getIRGenerator();
@@ -196,7 +184,9 @@ public:
 	xn::AudioMetaData& getAudioMetaData();
 	
     string LOG_NAME;
-
+    
+    ofEvent<ofxOpenNIUserEvent> userEvent;
+	
 protected:
 	
 	void threadedFunction();
@@ -240,6 +230,7 @@ private:
 	bool g_bIsDepthRawOnOption;
 	
     bool bIsContextReady;
+    bool bIsShuttingDown;
     bool bUseBackBuffer;
     bool bNeedsPose;
 	bool bUseTexture;
@@ -286,7 +277,7 @@ private:
 	// meta data
 	xn::DepthMetaData g_DepthMD;
 	xn::ImageMetaData g_ImageMD;
-	xn::IRMetaData	g_InfraMD;
+	xn::IRMetaData g_InfraMD;
     xn::SceneMetaData g_SceneMD;
 	xn::AudioMetaData g_AudioMD;
 	
@@ -294,18 +285,20 @@ private:
 	xn::MockDepthGenerator mockDepth;
 	
     // user callback handlers
-    static void XN_CALLBACK_TYPE User_NewUser(xn::UserGenerator& rGenerator, XnUserID nID, void* pCookie);
-    static void XN_CALLBACK_TYPE User_LostUser(xn::UserGenerator& rGenerator, XnUserID nID, void* pCookie);
-    static void XN_CALLBACK_TYPE UserPose_PoseDetected(xn::PoseDetectionCapability& rCapability, const XnChar* strPose, XnUserID nID, void* pCookie);
-    static void XN_CALLBACK_TYPE UserCalibration_CalibrationStart(xn::SkeletonCapability& capability, XnUserID nID, void* pCookie);
-    static void XN_CALLBACK_TYPE UserCalibration_CalibrationEnd(xn::SkeletonCapability& rCapability, XnUserID nID, XnCalibrationStatus bSuccess, void* pCookie);
+    static void XN_CALLBACK_TYPE UserCB_handleNewUser(xn::UserGenerator& userGenerator, XnUserID nID, void* pCookie);
+    static void XN_CALLBACK_TYPE UserCB_handleLostUser(xn::UserGenerator& userGenerator, XnUserID nID, void* pCookie);
+    static void XN_CALLBACK_TYPE UserCB_handlePoseDetected(xn::PoseDetectionCapability& poseDetectionCapability, const XnChar* strPose, XnUserID nID, void* pCookie);
+    static void XN_CALLBACK_TYPE UserCB_handleCalibrationStart(xn::SkeletonCapability& skeletonCapability, XnUserID nID, void* pCookie);
+	// static void XN_CALLBACK_TYPE UserCB_handleCalibrationProgress(xn::SkeletonCapability& skeletonCapability, XnUserID nID, XnCalibrationStatus calibrationStatus, void* pCookie);
+    static void XN_CALLBACK_TYPE UserCB_handleCalibrationEnd(xn::SkeletonCapability& skeletonCapability, XnUserID nID, XnCalibrationStatus calibrationStatus, void* pCookie);
     
     // user pose functions
-    XnChar	userCalibrationPose[20];
+    XnChar userCalibrationPose[20];
+    void startTracking(XnUserID nID);
+    void stopTracking(XnUserID nID);
+    void requestCalibration(XnUserID nID);
     void startPoseDetection(XnUserID nID);
     void stopPoseDetection(XnUserID nID);
-    void requestCalibration(XnUserID nID);
-    void startTracking(XnUserID nID);
     bool needsPoseForCalibration();
     
     // user storage
@@ -316,7 +309,7 @@ private:
     int maxNumUsers;
     float userDetectionConfidence;
     float userSmoothFactor;
-
+	
 	int instanceID;
     ofLogLevel logLevel;
     
